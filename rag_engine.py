@@ -9,22 +9,31 @@ from chromadb.api.types import Documents, EmbeddingFunction, Embeddings
 class HuggingFaceAPIEmbedder(EmbeddingFunction):
     def __init__(self):
         self.api_token = os.getenv("HF_API_TOKEN")
-        # We use a reliable HF inference endpoint for feature extraction
         self.api_url = "https://api-inference.huggingface.co/pipeline/feature-extraction/sentence-transformers/all-MiniLM-L6-v2"
         
         if not self.api_token:
-            print("[WARNING] HF_API_TOKEN not found in environment variables. Vectorization will fail.")
+            print("[WARNING] HF_API_TOKEN not found in environment variables.")
 
     def __call__(self, input: Documents) -> Embeddings:
         headers = {"Authorization": f"Bearer {self.api_token}"}
-        # HF API expects the text wrapped in an "inputs" list
-        response = requests.post(self.api_url, headers=headers, json={"inputs": input})
+        max_retries = 3
         
-        if response.status_code == 200:
-            # The API returns the exact 384-dimension vectors ChromaDB needs
-            return response.json()
-        else:
-            raise Exception(f"Failed to get embeddings from Hugging Face: {response.text}")
+        # A robust retry loop to bypass temporary DNS cloud glitches
+        for attempt in range(max_retries):
+            try:
+                response = requests.post(self.api_url, headers=headers, json={"inputs": input})
+                
+                if response.status_code == 200:
+                    return response.json()
+                else:
+                    raise Exception(f"HF API Error: {response.text}")
+                    
+            except requests.exceptions.RequestException as e:
+                if attempt < max_retries - 1:
+                    print(f"[NETWORK GLITCH] Connection failed. Retrying in 2 seconds... (Attempt {attempt + 1})")
+                    time.sleep(2)
+                else:
+                    raise Exception(f"Critical Network Failure: Could not reach Hugging Face after {max_retries} attempts. Details: {e}")
 
 # Initialize our custom embedder to pass into our databases
 hf_embedder = HuggingFaceAPIEmbedder()
