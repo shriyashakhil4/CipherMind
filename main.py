@@ -2,6 +2,7 @@ import os
 import shutil
 from fastapi import FastAPI, UploadFile, File, Form
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
 from pydantic import BaseModel
 from dotenv import load_dotenv
 
@@ -36,6 +37,11 @@ async def initialize_database():
         return {"status": "success"}
     except Exception as e:
         return {"status": "error", "message": str(e)}
+    
+    # Serve the frontend UI at the root URL
+@app.get("/")
+async def serve_frontend():
+    return FileResponse("index.html")
 
 @app.post("/api/chat")
 async def chat_endpoint(request: ChatRequest):
