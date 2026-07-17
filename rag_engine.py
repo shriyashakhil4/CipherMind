@@ -5,19 +5,17 @@ import chromadb
 from chromadb.api.types import Documents, EmbeddingFunction, Embeddings
 
 # ---------------------------------------------------------
-# 1. LIGHTWEIGHT HUGGING FACE API EMBEDDER (Version-Proofed)
+# 1. LIGHTWEIGHT HUGGING FACE API EMBEDDER 
 # ---------------------------------------------------------
 class HuggingFaceAPIEmbedder(EmbeddingFunction):
     def __init__(self):
         self.api_token = os.getenv("HF_API_TOKEN")
-        self.api_url = "https://api-inference.huggingface.co/pipeline/feature-extraction/sentence-transformers/all-MiniLM-L6-v2"
+        self.api_url = "https://router.huggingface.co/hf-inference/models/sentence-transformers/all-MiniLM-L6-v2/pipeline/feature-extraction"
         
         if not self.api_token:
             print("[WARNING] HF_API_TOKEN not found in environment variables.")
 
     def __call__(self, input: Documents = None, texts: Documents = None) -> Embeddings:
-        # FIX: ChromaDB updated its internal variables from 'texts' to 'input' in recent versions.
-        # This fallback ensures the code works perfectly on both older and newer ChromaDB installs.
         docs = input if input is not None else texts
         
         headers = {"Authorization": f"Bearer {self.api_token}"}
@@ -27,11 +25,9 @@ class HuggingFaceAPIEmbedder(EmbeddingFunction):
             try:
                 response = requests.post(self.api_url, headers=headers, json={"inputs": docs})
                 
-                # 1. Success path
                 if response.status_code == 200:
                     return response.json()
                 
-                # 2. Handle the Hugging Face "Cold Start / Model Loading" 503 scenario
                 if response.status_code == 503:
                     try:
                         error_data = response.json()
@@ -44,7 +40,6 @@ class HuggingFaceAPIEmbedder(EmbeddingFunction):
                     except Exception:
                         pass
                 
-                # 3. If it's a non-503 error, throw an exception
                 raise Exception(f"HF API Error: {response.status_code} - {response.text}")
                     
             except requests.exceptions.RequestException as e:
@@ -135,7 +130,7 @@ def query_rag(user_message: str, domain: str, session_id: str) -> str:
     if results['documents'] and len(results['documents'][0]) > 0:
         retrieved_context = "\n".join(results['documents'][0])
 
-    if session_id not in SESSION_MEMORY:
+    if session_id not in SESSION_MEMORY or not isinstance(SESSION_MEMORY[session_id], list):
         SESSION_MEMORY[session_id] = []
         
     SESSION_MEMORY[session_id].append({"role": "user", "content": user_message})
@@ -167,7 +162,7 @@ RETRIEVED CONTEXT:
                 "https://api.groq.com/openai/v1/chat/completions",
                 headers={"Authorization": f"Bearer {key}"},
                 json={
-                    "model": "llama3-8b-8192", 
+                    "model": "llama-3.1-8b-instant", 
                     "messages": api_messages,
                     "temperature": 0.3
                 }
@@ -177,8 +172,12 @@ RETRIEVED CONTEXT:
                 ai_reply = groq_response.json()["choices"][0]["message"]["content"]
                 SESSION_MEMORY[session_id].append({"role": "assistant", "content": ai_reply})
                 return ai_reply
+            else:
+                # --- NEW DIAGNOSTIC LOGGING ---
+                print(f"\n[GROQ API REJECTED] Status Code: {groq_response.status_code}")
+                print(f"[GROQ ERROR DETAILS]: {groq_response.text}\n")
                 
         except Exception as e:
-            print(f"Groq API Key failed: {e}. Attempting fallback key...")
+            print(f"Groq Request Failed: {e}. Attempting fallback key...")
             
-    return "[SYSTEM ERROR] All Groq API fallbacks failed or rate limit exceeded."
+    return "[SYSTEM ERROR] All Groq API fallbacks failed or rate limit exceeded. Check VS Code terminal."
