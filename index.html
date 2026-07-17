@@ -617,7 +617,7 @@
             // --- NEW: TELL BACKEND TO WIPE RAM ---
             const fd = new FormData();
             fd.append("session_id", sessionId);
-            fetch('http://127.0.0.1:8000/api/clear-session', { method: 'POST', body: fd }).catch(()=>console.log("Cleared RAM."));
+            fetch('/api/clear-session', { method: 'POST', body: fd }).catch(()=>console.log("Cleared RAM."));
             
             if (currentSessionId === sessionId) {
                 startNewChat();
@@ -783,12 +783,12 @@
                     formData.append("message", text); 
                     formData.append("session_id", currentSessionId); // --- NEW: INJECT SESSION ID ---
 
-                    response = await fetch('http://127.0.0.1:8000/api/chat_with_file', {
+                    response = await fetch('/api/chat_with_file', {
                         method: 'POST',
                         body: formData
                     });
                 } else {
-                    response = await fetch('http://127.0.0.1:8000/api/chat', {
+                    response = await fetch('/api/chat', {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
                         // --- NEW: INJECT SESSION ID ---
