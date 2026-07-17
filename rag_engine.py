@@ -1,10 +1,11 @@
 import os
+import time
 import requests
 import chromadb
 from chromadb.api.types import Documents, EmbeddingFunction, Embeddings
 
 # ---------------------------------------------------------
-# 1. LIGHTWEIGHT HUGGING FACE API EMBEDDER (The RAM Fix)
+# 1. LIGHTWEIGHT HUGGING FACE API EMBEDDER (Version-Proofed)
 # ---------------------------------------------------------
 class HuggingFaceAPIEmbedder(EmbeddingFunction):
     def __init__(self):
@@ -14,39 +15,53 @@ class HuggingFaceAPIEmbedder(EmbeddingFunction):
         if not self.api_token:
             print("[WARNING] HF_API_TOKEN not found in environment variables.")
 
-    def __call__(self, input: Documents) -> Embeddings:
-        headers = {"Authorization": f"Bearer {self.api_token}"}
-        max_retries = 3
+    def __call__(self, input: Documents = None, texts: Documents = None) -> Embeddings:
+        # FIX: ChromaDB updated its internal variables from 'texts' to 'input' in recent versions.
+        # This fallback ensures the code works perfectly on both older and newer ChromaDB installs.
+        docs = input if input is not None else texts
         
-        # A robust retry loop to bypass temporary DNS cloud glitches
+        headers = {"Authorization": f"Bearer {self.api_token}"}
+        max_retries = 5
+        
         for attempt in range(max_retries):
             try:
-                response = requests.post(self.api_url, headers=headers, json={"inputs": input})
+                response = requests.post(self.api_url, headers=headers, json={"inputs": docs})
                 
+                # 1. Success path
                 if response.status_code == 200:
                     return response.json()
-                else:
-                    raise Exception(f"HF API Error: {response.text}")
+                
+                # 2. Handle the Hugging Face "Cold Start / Model Loading" 503 scenario
+                if response.status_code == 503:
+                    try:
+                        error_data = response.json()
+                        if "loading" in error_data.get("error", "").lower():
+                            wait_time = error_data.get("estimated_time", 20.0)
+                            print(f"\n[HF INFRASTRUCTURE] Model is waking up on Hugging Face servers...")
+                            print(f"[HF INFRASTRUCTURE] Waiting {wait_time} seconds for the GPU to initialize...")
+                            time.sleep(wait_time)
+                            continue
+                    except Exception:
+                        pass
+                
+                # 3. If it's a non-503 error, throw an exception
+                raise Exception(f"HF API Error: {response.status_code} - {response.text}")
                     
             except requests.exceptions.RequestException as e:
                 if attempt < max_retries - 1:
-                    print(f"[NETWORK GLITCH] Connection failed. Retrying in 2 seconds... (Attempt {attempt + 1})")
-                    time.sleep(2)
+                    print(f"[NETWORK GLITCH] Connection failed. Retrying in 3 seconds... (Attempt {attempt + 1})")
+                    time.sleep(3)
                 else:
-                    raise Exception(f"Critical Network Failure: Could not reach Hugging Face after {max_retries} attempts. Details: {e}")
+                    raise Exception(f"Critical Failure: Could not reach Hugging Face after {max_retries} attempts. Details: {e}")
 
-# Initialize our custom embedder to pass into our databases
 hf_embedder = HuggingFaceAPIEmbedder()
 
 
 # ---------------------------------------------------------
 # 2. CHROMADB VECTOR DATABASE SETUP
 # ---------------------------------------------------------
-# Connect to the local SQLite database created by Chroma
 chroma_client = chromadb.PersistentClient(path="./chroma_data")
 
-# Create or load the collections for our dual-domain matrix, 
-# explicitly attaching our custom lightweight API Embedder
 collections = {
     "general": chroma_client.get_or_create_collection(
         name="general_matrix", 
@@ -58,7 +73,6 @@ collections = {
     )
 }
 
-# Temporary RAM storage for conversational context
 SESSION_MEMORY = {}
 
 
@@ -66,11 +80,6 @@ SESSION_MEMORY = {}
 # 3. THE "HEAD & TAIL STAPLER" CHUNKING ALGORITHM
 # ---------------------------------------------------------
 def head_and_tail_stapler(text: str, chunk_size: int = 1000, overlap: int = 200) -> list[str]:
-    """
-    Slices massive documents into overlapping chunks. 
-    It 'staples' the tail of the previous chunk to the head of the next
-    so the AI never loses context mid-sentence.
-    """
     chunks = []
     start = 0
     text_length = len(text)
@@ -79,7 +88,6 @@ def head_and_tail_stapler(text: str, chunk_size: int = 1000, overlap: int = 200)
         end = start + chunk_size
         chunk = text[start:end]
         chunks.append(chunk)
-        # Move forward, but step back by the 'overlap' amount to staple context
         start += (chunk_size - overlap)
         
     return chunks
@@ -89,10 +97,6 @@ def head_and_tail_stapler(text: str, chunk_size: int = 1000, overlap: int = 200)
 # 4. DATABASE INGESTION & QUERY FUNCTIONS
 # ---------------------------------------------------------
 def rebuild_vector_store(domain: str):
-    """
-    Reads all text files in the domain's knowledge base folder, 
-    chunks them, and uploads them to ChromaDB using the free HF API.
-    """
     folder_path = f"knowledge_base/system_files/{domain}"
     if not os.path.exists(folder_path):
         os.makedirs(folder_path, exist_ok=True)
@@ -111,8 +115,6 @@ def rebuild_vector_store(domain: str):
             ids = [f"{filename}_{i}" for i in range(len(chunks))]
             metadatas = [{"source": filename, "chunk_index": i} for i in range(len(chunks))]
             
-            # Because we attached hf_embedder to the collection earlier, 
-            # calling add() automatically fires the text to Hugging Face!
             collection.add(
                 documents=chunks,
                 metadatas=metadatas,
@@ -122,34 +124,25 @@ def rebuild_vector_store(domain: str):
 
 
 def query_rag(user_message: str, domain: str, session_id: str) -> str:
-    """
-    Takes the user's message, converts it to an embedding, searches the database,
-    and returns the context-augmented AI response using Groq.
-    """
-    # 1. Search the Vector Database
     collection = collections[domain]
     
-    # ChromaDB will automatically use our HF API embedder to convert the user_message
     results = collection.query(
         query_texts=[user_message],
-        n_results=3 # Get the top 3 most relevant chunks
+        n_results=3 
     )
     
     retrieved_context = ""
     if results['documents'] and len(results['documents'][0]) > 0:
         retrieved_context = "\n".join(results['documents'][0])
 
-    # 2. Manage Conversation Memory
     if session_id not in SESSION_MEMORY:
         SESSION_MEMORY[session_id] = []
         
     SESSION_MEMORY[session_id].append({"role": "user", "content": user_message})
     
-    # Keep memory from exploding (limit to last 10 interactions)
     if len(SESSION_MEMORY[session_id]) > 10:
         SESSION_MEMORY[session_id] = SESSION_MEMORY[session_id][-10:]
         
-    # 3. Construct the Augmented Prompt
     system_prompt = f"""You are the CipherMind Intelligence Matrix. 
 You are currently operating in the {domain.upper()} domain.
 
@@ -163,7 +156,6 @@ RETRIEVED CONTEXT:
     api_messages = [{"role": "system", "content": system_prompt}]
     api_messages.extend(SESSION_MEMORY[session_id])
 
-    # 4. Call Groq API with Cascading Fallback Loop
     groq_keys = [os.getenv("GROQ_API_KEY_1"), os.getenv("GROQ_API_KEY_2"), os.getenv("GROQ_API_KEY_3")]
     
     for key in groq_keys:
