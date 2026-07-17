@@ -1,3 +1,9 @@
+# 🛡️ CipherMind: Unified Intelligence Matrix
+
+🚀 **Live Deployment:** [Access CipherMind Here](https://ciphermind.onrender.com)
+
+An AI-powered Retrieval-Augmented Generation (RAG) engine designed to securely ingest, vectorize, and query document knowledge bases.
+
 # CipherMind 🧠🔒
 
 CipherMind is a production-ready, multi-modal Retrieval-Augmented Generation (RAG) platform designed to bridge the gap between AI automation and professional security engineering. Built entirely with a high-resilience FastAPI backend, the system architecture utilizes a dynamically cascading API pool to eliminate rate limits while offering isolated operational domains for general tasks and advanced adversarial security analysis.
